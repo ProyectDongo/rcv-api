@@ -1,52 +1,50 @@
 from fastapi import FastAPI, HTTPException, Header
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from tasks import fetch_rcv_task
-from celery.result import AsyncResult
 import os
+import subprocess
 import uuid
+import logging
 
-app = FastAPI(title="SII RCV Worker")
+app = FastAPI(title="SII RCV API - PythonAnywhere")
 
-API_KEY = os.getenv("SII_API_KEY", "tu_clave_secreta")
+# Configuración de logs
+logging.basicConfig(
+    filename=f"/home/{os.getenv('USER')}/logs/sii_api.log",
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+API_KEY = os.getenv("SII_API_KEY", "sii2025facilmasterkey")
 
 class RCVRequest(BaseModel):
-    periodo: str  # "202501"
-    tipo: str     # "compra" o "venta"
+    periodo: str    # ej: "202501"
+    tipo: str       # "compra" o "venta"
     rut: str
     password: str
 
-@app.post("/rcv")
-async def iniciar_rcv(request: RCVRequest, x_api_key: str = Header(None)):
-    if x_api_key != API_KEY:
-        raise HTTPException(401, "API Key inválida")
-    
-    task = fetch_rcv_task.delay(
-        periodo=request.periodo,
-        tipo_rcv=request.tipo,
-        rut=request.rut,
-        password=request.password
-    )
-    
-    return {"task_id": task.id, "status": "iniciado"}
+@app.get("/")
+async def root():
+    return {"message": "SII RCV API viva - PythonAnywhere GRATIS"}
 
-@app.get("/rcv/status/{task_id}")
-async def estado(task_id: str, x_api_key: str = Header(None)):
+@app.post("/api/rcv")
+async def rcv(request: RCVRequest, x_api_key: str = Header(None)):
     if x_api_key != API_KEY:
+        logging.warning(f"API Key inválida desde {request.client.host}")
         raise HTTPException(401, "API Key inválida")
     
-    result = AsyncResult(task_id)
-    if result.ready():
-        return {"status": "completado", "data": result.get()}
-    return {"status": result.state}
-
-@app.get("/rcv/download/{task_id}")
-async def download(task_id: str, x_api_key: str = Header(None)):
-    if x_api_key != API_KEY:
-        raise HTTPException(401, "API Key inválida")
+    task_id = str(uuid.uuid4())
+    log_file = f"/home/{os.getenv('USER')}/logs/rcv_{task_id}.log"
     
-    file_path = f"/downloads/rcv_{task_id}.csv"
-    if not os.path.exists(file_path):
-        raise HTTPException(404, "Archivo no listo")
+    # Lanzamos la tarea en segundo plano
+    cmd = f"python /home/{os.getenv('USER')}/sii-rcv-api/run_worker.py {task_id} {request.periodo} {request.tipo} \"{request.rut}\" \"{request.password}\" > {log_file} 2>&1"
+    subprocess.Popen(["bash", "-c", cmd])
     
-    return FileResponse(file_path, filename=f"rcv_{task_id}.csv")
+    logging.info(f"Nueva solicitud RCV - Task ID: {task_id} - {request.tipo} {request.periodo}")
+    
+    return {
+        "task_id": task_id,
+        "status": "iniciado",
+        "message": "RCV en proceso (3-5 minutos)",
+        "log_url": f"https://{os.getenv('USER')}.pythonanywhere.com/logs/rcv_{task_id}.log",
+        "docs": f"https://{os.getenv('USER')}.pythonanywhere.com/docs"
+    }
